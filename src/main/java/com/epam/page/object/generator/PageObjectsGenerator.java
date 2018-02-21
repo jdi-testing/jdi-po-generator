@@ -1,164 +1,207 @@
 package com.epam.page.object.generator;
 
-/**
- * Created by Roman Iovlev on 14.02.2018
- * Email: roman.iovlev.jdi@gmail.com; Skype: roman.iovlev
- */
-
-import com.epam.jdi.uitests.web.selenium.elements.common.Button;
-import com.epam.jdi.uitests.web.selenium.elements.common.CheckBox;
-import com.epam.jdi.uitests.web.selenium.elements.common.Image;
-import com.epam.jdi.uitests.web.selenium.elements.common.Text;
-import com.epam.jdi.uitests.web.selenium.elements.composite.WebPage;
-import com.epam.jdi.uitests.web.selenium.elements.composite.WebSite;
-import com.epam.jdi.uitests.web.selenium.elements.pageobjects.annotations.JPage;
-import com.epam.jdi.uitests.web.selenium.elements.pageobjects.annotations.JSite;
-import com.epam.page.object.generator.builder.CommonFieldsBuilder;
-import com.epam.page.object.generator.builder.IFieldsBuilder;
-import com.epam.page.object.generator.model.SearchRule;
-import com.epam.page.object.generator.parser.JSONIntoRuleParser;
-import com.squareup.javapoet.*;
-import org.json.simple.parser.ParseException;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.openqa.selenium.WebElement;
+import com.epam.page.object.generator.adapter.classbuildable.JavaClassBuildable;
+import com.epam.page.object.generator.adapter.JavaFileWriter;
+import com.epam.page.object.generator.adapter.classbuildable.PageClass;
+import com.epam.page.object.generator.adapter.classbuildable.SiteClass;
+import com.epam.page.object.generator.adapter.JavaClass;
+import com.epam.page.object.generator.builder.JavaClassBuilder;
+import com.epam.page.object.generator.builder.WebElementGroupFieldBuilder;
+import com.epam.page.object.generator.builder.webpage.WebPageBuilder;
+import com.epam.page.object.generator.error.ValidationException;
+import com.epam.page.object.generator.model.RawSearchRule;
+import com.epam.page.object.generator.model.WebPage;
+import com.epam.page.object.generator.model.searchrule.SearchRule;
+import com.epam.page.object.generator.util.RawSearchRuleMapper;
+import com.epam.page.object.generator.util.SearchRuleExtractor;
+import com.epam.page.object.generator.util.SelectorUtils;
+import com.epam.page.object.generator.util.TypeTransformer;
+import com.epam.page.object.generator.util.ValidationChecker;
+import com.epam.page.object.generator.validator.JsonSchemaValidator;
+import com.epam.page.object.generator.validator.JsonValidators;
+import com.epam.page.object.generator.validator.WebValidators;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
-import static com.epam.jdi.tools.StringUtils.splitCamelCase;
-import static com.epam.page.object.generator.builder.StringUtils.firstLetterDown;
-import static com.epam.page.object.generator.builder.StringUtils.firstLetterUp;
-import static javax.lang.model.element.Modifier.PUBLIC;
-import static javax.lang.model.element.Modifier.STATIC;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * Main class is needed for generation .java source files. This class can be created by {@link
+ * PageObjectGeneratorFactory}
+ */
 public class PageObjectsGenerator {
-	private String packageName;
 
-	private JSONIntoRuleParser parser;
-	private List<String> urls;
-	private String outputDir;
+    private RawSearchRuleMapper rawSearchRuleMapper;
+    private JsonSchemaValidator jsonSchemaValidator;
+    private TypeTransformer typeTransformer;
+    private ValidationChecker checker;
+    private JsonValidators jsonValidators;
+    private WebValidators webValidators;
+    private JavaClassBuilder javaClassBuilder;
+    private WebElementGroupFieldBuilder webElementGroupFieldBuilder;
+    private JavaFileWriter javaFileWriter;
+    private WebPageBuilder webPageBuilder;
 
-	private Map<String, IFieldsBuilder> builders = new HashMap<>();
+    private SelectorUtils selectorUtils;
+    private SearchRuleExtractor searchRuleExtractor;
 
-	public PageObjectsGenerator(List<String> urls, String outputDir) {
-		this("src/main/java/com/epam/page/object/generator/jdiRules.json", urls, outputDir, "test.project");
-	}
-	public PageObjectsGenerator(String jsonPath, List<String> urls, String outputDir) {
-		this(jsonPath, urls, outputDir, "test.project");
-	}
-	public PageObjectsGenerator(String jsonPath, List<String> urls, String outputDir, String packageName) {
-		builders.put("button", new CommonFieldsBuilder(Button.class));
-		builders.put("text", new CommonFieldsBuilder(Text.class));
-		builders.put("checkbox", new CommonFieldsBuilder(CheckBox.class));
-		builders.put("image", new CommonFieldsBuilder(Image.class));
-		builders.put("webelement", new CommonFieldsBuilder(WebElement.class));
-		parser = new JSONIntoRuleParser(jsonPath, builders.keySet());
-		this.urls = urls;
-		this.outputDir = outputDir;
-		this.packageName = packageName;
-	}
+    private boolean forceGenerateFile = false;
 
-	public PageObjectsGenerator addBuilder(String name, IFieldsBuilder builder) {
-		builders.put(name.toLowerCase(), builder);
-		return this;
-	}
 
-	/**
-	 * Generates .java file with all HTML-elements found on the web-site by rules given by user in .json file.
-	 * @throws IOException If .json file could not be opened or written to .java file.
-	 * @throws ParseException If JSON has invalid format.
-	 * @throws URISyntaxException If urls could not be parsed as URI references.
-	 */
-	public void generatePageObjects() throws IOException, ParseException, URISyntaxException {
-		List<SearchRule> searchRules = parser.getRulesFromJSON();
-		List<FieldSpec> siteClassFields = new ArrayList<>();
+    private final static Logger logger = LoggerFactory.getLogger(PageObjectsGenerator.class);
 
-		for (String url : urls) {
-			String titleName = splitCamelCase(getPageTitle(url));
-			String pageFieldName = firstLetterDown(titleName);
-			String pageClassName = firstLetterUp(titleName);
-			ClassName pageClass = createPageClass(pageClassName, searchRules, url);
+    public PageObjectsGenerator(RawSearchRuleMapper rawSearchRuleMapper,
+                                JsonSchemaValidator jsonSchemaValidator,
+                                TypeTransformer typeTransformer,
+                                ValidationChecker checker,
+                                JsonValidators jsonValidators,
+                                WebValidators webValidators,
+                                JavaClassBuilder javaClassBuilder,
+                                WebElementGroupFieldBuilder webElementGroupFieldBuilder,
+                                JavaFileWriter javaFileWriter,
+                                WebPageBuilder webPageBuilder,
+                                SelectorUtils selectorUtils,
+                                SearchRuleExtractor searchRuleExtractor) {
+        this.rawSearchRuleMapper = rawSearchRuleMapper;
+        this.jsonSchemaValidator = jsonSchemaValidator;
+        this.typeTransformer = typeTransformer;
+        this.checker = checker;
+        this.jsonValidators = jsonValidators;
+        this.webValidators = webValidators;
+        this.javaClassBuilder = javaClassBuilder;
+        this.webElementGroupFieldBuilder = webElementGroupFieldBuilder;
+        this.javaFileWriter = javaFileWriter;
+        this.webPageBuilder = webPageBuilder;
+        this.selectorUtils = selectorUtils;
+        this.searchRuleExtractor = searchRuleExtractor;
+    }
 
-			siteClassFields.add(FieldSpec.builder(pageClass, pageFieldName)
-				.addModifiers(PUBLIC, STATIC)
-				.addAnnotation(AnnotationSpec.builder(JPage.class)
-					.addMember("url", "$S", getUrlWithoutDomain(url))
-					.addMember("title", "$S", getPageTitle(url))
-					.build())
-				.build());
-		}
+    /**
+     * Main method which checks and generates page objects.
+     *
+     * @param jsonPath  path to input json file, which must start from resources folder.
+     * @param outputDir path to the folder where it is needed to be generated .java source files.
+     * @param urls      list of urls which PageObjectsGenerator must visit and try to find elements on
+     *                  each of them.
+     * @throws IOException can be thrown from {@link JavaFileWriter#writeFiles(String, List)} if
+     *                     outputDir path doesn't correct.
+     */
+    public void generatePageObjects(String jsonPath, String outputDir, List<String> urls)
+            throws IOException {
 
-		TypeSpec siteClass = TypeSpec.classBuilder("Site")
-			.addModifiers(PUBLIC)
-			.addAnnotation(AnnotationSpec.builder(JSite.class)
-				.addMember("domain", "$S", getDomainName())
-				.build())
-			.superclass(WebSite.class)
-			.addFields(siteClassFields)
-			.build();
+        List<RawSearchRule> rawSearchRuleList = getRawSearchRules(jsonPath);
+        jsonSchemaValidation(rawSearchRuleList);
 
-		JavaFile javaFile = JavaFile.builder(packageName + ".site", siteClass)
-			.build();
+        List<SearchRule> searchRuleList = getSearchRules(rawSearchRuleList);
+        jsonValidation(searchRuleList);
 
-		javaFile.writeTo(Paths.get(outputDir));
-	}
+        List<WebPage> webPages = createWebPages(urls, searchRuleList);
+        webValidators.validate(webPages);
 
-	/**
-	 * Generates one of the nested classes with all HTML-elements found on the web-page with following url by rules.
-	 * @param pageClassName Name of page class.
-	 * @param searchRules List of rules.
-	 * @param url One of the web-pages of web-site.
-	 * @return generated page class.
-	 * @throws IOException If can't write java file.
-	 */
-	private ClassName createPageClass(String pageClassName, List<SearchRule> searchRules, String url) throws IOException {
-		List<FieldSpec> fields = new ArrayList<>();
+        List<JavaClassBuildable> rawJavaClasses = getJavaClassBuildables(webPages);
 
-		for (SearchRule searchRule : searchRules)
-			fields.addAll(builders.get(searchRule.type).buildField(searchRule, url));
+        List<JavaClass> javaClasses = getJavaClasses(rawJavaClasses);
 
-		TypeSpec pageClass = TypeSpec.classBuilder(pageClassName)
-			.addModifiers(PUBLIC)
-			.superclass(WebPage.class)
-			.addFields(fields)
-			.build();
-		JavaFile javaFile = JavaFile.builder(packageName + ".pages", pageClass)
-			.build();
+        checker.checkWebPages(webPages, javaClasses, outputDir, javaFileWriter, forceGenerateFile);
 
-		javaFile.writeTo(Paths.get(outputDir));
+        logger.info("Start generating JavaClasses...");
+        javaFileWriter.writeFiles(outputDir, javaClasses);
+        logger.info("Finish generating JavaClasses");
+    }
 
-		return ClassName.get(packageName + ".pages", pageClassName);
-	}
+    private List<RawSearchRule> getRawSearchRules(String jsonPath) {
+        logger.info("Start creating list of RawSearchRules...");
+        List<RawSearchRule> rawSearchRuleList = rawSearchRuleMapper.getRawSearchRuleList(jsonPath);
+        logger.info("Finish creating list of RawSearchRules\n");
+        return rawSearchRuleList;
+    }
 
-	/**
-	 * Returns URL without it's domain part.
-	 * @param url One of the web-pages of web-site.
-	 * @return URL without domain part.
-	 * @throws URISyntaxException If url could not be parsed as a URI reference.
-	 */
-	private String getUrlWithoutDomain(String url) throws URISyntaxException {
-		return new URI(url).getPath();
-	}
+    private void jsonValidation(List<SearchRule> searchRuleList) {
+        logger.info("Start Json validation...\n");
+        jsonValidators.validate(searchRuleList);
+        logger.info("Finish Json validation\n");
 
-	/**
-	 * Extracts domain URL from list of URLs of the web-site.
-	 * @return domain URL.
-	 * @throws URISyntaxException If url could not be parsed as a URI reference.
-	 */
-	private String getDomainName() throws URISyntaxException {
-		return new URI(urls.get(0)).getHost();
-	}
+        checker.checkSearchRules(searchRuleList);
+    }
 
-	private String getPageTitle(String url) throws IOException {
-		Document document = Jsoup.connect(url).get();
-		return document.title();
-	}
+    private List<SearchRule> getSearchRules(List<RawSearchRule> rawSearchRuleList) {
+        logger.info("Start transforming RawSearchRules in SearchRules...");
+        List<SearchRule> searchRuleList = typeTransformer
+                .transform(rawSearchRuleList, selectorUtils, searchRuleExtractor);
+        logger.info("Finish transforming RawSearchRules in SearchRules\n");
+        return searchRuleList;
+    }
 
+    private void jsonSchemaValidation(List<RawSearchRule> rawSearchRuleList) {
+        logger.info("Start validation RawSearchRules with using Json Schema...");
+        jsonSchemaValidator.validate(rawSearchRuleList);
+        logger.info("Finish validation\n");
+
+        checker.checkRawSearchRules(rawSearchRuleList);
+    }
+
+    private List<WebPage> createWebPages(List<String> urls, List<SearchRule> searchRuleList) {
+        logger.info("Start creating web pages...");
+        List<WebPage> webPages = webPageBuilder.generate(urls, searchRuleExtractor);
+        logger.info("Finish creating web pages\n");
+
+        webPages.forEach(wp -> wp.addSearchRules(searchRuleList));
+        return webPages;
+    }
+
+    private List<JavaClass> getJavaClasses(List<JavaClassBuildable> javaClassBuildables) {
+        List<JavaClass> javaClasses = new ArrayList<>();
+        logger.info("Start creating JavaClasses...");
+        for (JavaClassBuildable javaClassBuildable : javaClassBuildables) {
+            javaClasses.add(javaClassBuildable.accept(javaClassBuilder));
+        }
+        logger.info("Finish creating JavaClasses\n");
+        return javaClasses;
+    }
+
+    private List<JavaClassBuildable> getJavaClassBuildables(List<WebPage> webPages) {
+        List<JavaClassBuildable> rawJavaClasses = new ArrayList<>();
+        logger.info("Start creating JavaClassBuildables...");
+        logger.debug("Start creating SiteClass...");
+        rawJavaClasses.add(new SiteClass(webPages));
+        logger.debug("Finish creating SiteClass\n");
+
+        for (WebPage webPage : webPages) {
+            logger.debug("Start PageClass for '" + webPage.getTitle() + "' page");
+            rawJavaClasses.add(new PageClass(webPage, webElementGroupFieldBuilder));
+            logger.debug("Finish creating PageClass\n");
+            if (webPage.isContainedFormSearchRule()) {
+                rawJavaClasses.addAll(webPage.getFormClasses(selectorUtils));
+            }
+
+        }
+        logger.info("Finish creating JavaClassBuildables\n");
+        return rawJavaClasses;
+    }
+
+    /**
+     * Method allows change value of forceGenerateFile variable. If forceGenerateFile equals true -
+     * POG generates all valid {@link SearchRule} and after that throws {@link ValidationException},
+     * otherwise if forceGenerateFile equals false - POG doesn't generate files and throws {@link
+     * ValidationException}.<br/>
+     * <p>
+     * It only works for web validation process. If the errors are at the stage of json validation,
+     * it will just throw {@link ValidationException} regardless of the forceGenerateFile value.
+     */
+    public void setForceGenerateFile(boolean forceGenerateFile) {
+        this.forceGenerateFile = forceGenerateFile;
+    }
+
+    /**
+     * Method allows to edit output method names by component name suffix<br/>
+     * e.g <i>public Button value -> public Button valueButton</i><br/>
+     * <p>
+     * Works only with suffixes 'Button', 'Page', 'Form' if the element doesn't end with suffix
+     */
+    public void setAddElementSuffix(boolean addElementSuffix) {
+        webElementGroupFieldBuilder.setAddElementSuffix(addElementSuffix);
+    }
 }

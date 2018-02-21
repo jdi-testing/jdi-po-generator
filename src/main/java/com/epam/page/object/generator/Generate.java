@@ -1,32 +1,28 @@
 package com.epam.page.object.generator;
 
-/**
- * Created by Roman Iovlev on 14.02.2018
- * Email: roman.iovlev.jdi@gmail.com; Skype: roman.iovlev
- */
-
-import org.json.simple.parser.ParseException;
-
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.util.List;
-
 import static java.util.Arrays.asList;
 
+import java.io.IOException;
+import java.util.List;
+
+/**
+ * Created by Roman_Iovlev on 10/16/2017.
+ */
 public class Generate {
 
     // EXAMPLE
-    public static void main(String[] args) throws ParseException, IOException, URISyntaxException {
+    public static void main(String[] args) throws IOException {
         List<String> urls = asList(
             "https://www.w3schools.com/html/html_forms.asp",
             "https://www.w3schools.com/css/default.asp",
             "https://www.w3schools.com/html/html_form_input_types.asp");
 
-        new PageObjectsGenerator(
-                "src/test/resources/webElement.json",
-                urls,
-                "D:\\Work\\Projects\\JDI2\\Java\\JDIGit\\JDIPOGen\\src\\main",
-                "w3c.tests")
-                .generatePageObjects();
+
+
+        PageObjectsGenerator pog = PageObjectGeneratorFactory.getPageObjectGenerator("w3c.tests",
+            "/groups.json", true);
+        pog.setForceGenerateFile(true);
+        pog.setAddElementSuffix(true);
+        pog.generatePageObjects("/webElement.json", "src/main/java/", urls);
     }
 }
